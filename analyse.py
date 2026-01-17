@@ -14,6 +14,7 @@ PHYSIO = {
     'default_load_walk': 20,    # ~Z1 Walk
     'default_load_other': 45    # Gym/Swim etc
 }
+PHYSIO['default_load_strength'] = 80
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / 'output/raw_strava_data.csv'
@@ -51,9 +52,9 @@ df.replace([np.inf, -np.inf], np.nan, inplace=True)
 # Sport Classification
 def classify_sport(t):
     if t in ['Run', 'TrailRun']: return 'Run'
-    if t in ['Ride', 'GravelRide', 'VirtualRide', 'E-BikeRide']: return 'Ride'
-    if t in ['Walk', 'Hike']: return 'Walk'
+    if t in ['Ride', 'GravelRide', 'VirtualRide']: return 'Ride'
     if t in ['Swim']: return 'Swim'
+    if t in ['WeightTraining', 'Workout', 'Yoga']: return 'Strength' # <-- AJOUT
     return 'Other'
 
 df['sport_category'] = df['sport_type'].apply(classify_sport)
