@@ -2,7 +2,12 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-# Setup paths
+# --- CONFIGURATION ---
+# ⚠️ ADJUST THESE TO YOUR PHYSIOLOGY FOR ACCURACY ⚠️
+MAX_HR = 210      # Your estimated Max Heart Rate
+REST_HR = 50      # Your Resting Heart Rate
+THRESHOLD_HR = 172 # Your Anaerobic Threshold (approx)
+
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / 'output/raw_strava_data.csv'
 OUTPUT_FILE = BASE_DIR / 'output/analytics_strava.csv'
@@ -10,71 +15,124 @@ OUTPUT_FILE = BASE_DIR / 'output/analytics_strava.csv'
 if not INPUT_FILE.exists():
     raise FileNotFoundError(f"❌ Input file not found: {INPUT_FILE}. Run fetch.py first.")
 
+print("🔄 Loading data...")
 df = pd.read_csv(INPUT_FILE)
 
-cols_to_keep = [
-  "id", "name", "start_date_local", "sport_type", "distance", "moving_time",
-  "total_elevation_gain", "average_heartrate", "max_heartrate",
-  "average_cadence", "average_speed", "max_speed",
-  "kilojoules", "trainer", "manual"
+# --- 1. BASIC CLEANING ---
+
+# Keep relevant columns only (handling missing ones safely)
+cols_wanted = [
+    "id", "name", "start_date", "start_date_local", "type", "sport_type", 
+    "distance", "moving_time", "elapsed_time", "total_elevation_gain", 
+    "average_heartrate", "max_heartrate", "average_cadence", 
+    "average_speed", "max_speed", "suffer_score"
 ]
+existing_cols = [c for c in cols_wanted if c in df.columns]
+df = df[existing_cols].copy()
 
-# Ensure we don't crash if columns are missing (common in empty exports)
-existing_cols = [c for c in cols_to_keep if c in df.columns]
-df_clean = df[existing_cols].copy()
+# Date conversions
+df['start_date_local'] = pd.to_datetime(df['start_date_local'])
+df['year'] = df['start_date_local'].dt.year
+df['month'] = df['start_date_local'].dt.month
+df['week'] = df['start_date_local'].dt.isocalendar().week
+df['day_of_year'] = df['start_date_local'].dt.dayofyear
 
-### UNIT CONVERSION ###
+# Unit Conversions
+df['distance_km'] = df['distance'] / 1000
+df['duration_h'] = df['moving_time'] / 3600
+df['duration_min'] = df['moving_time'] / 60
+df['speed_kmh'] = df['average_speed'] * 3.6
+df['pace_min_km'] = 60 / df['speed_kmh'] # Only useful for display
 
-# Distance: Meters -> km
-df_clean['distance_km'] = df_clean['distance'] / 1000
+# Fix Infinite/NaN values
+df.replace([np.inf, -np.inf], np.nan, inplace=True)
+df = df.dropna(subset=['distance_km', 'moving_time']) # Drop empty activities
+df = df[df['distance_km'] > 0.1] # Drop artifacts
 
-# Time: Seconds -> Hours
-df_clean['duration_h'] = df_clean['moving_time'] / 3600
+# --- 2. ADVANCED METRICS ---
 
-# Speed: m/s -> km/h
-df_clean['avg_speed_kmh'] = df_clean['average_speed'] * 3.6
-df_clean['max_speed_kmh'] = df_clean['max_speed'] * 3.6
+# A. Banister TRIMP (Training Impulse)
+# The Gold Standard for measuring "Load" across different sports
+# Formula: Duration_min * HR_Reserve_Ratio * 0.64 * exp(1.92 * HR_Reserve_Ratio)
+# If HR is missing, we estimate Load based on Moving Time * Moderate Intensity factor
+def calculate_trimp(row):
+    if pd.isna(row['average_heartrate']) or row['average_heartrate'] == 0:
+        # Fallback: Estimate 40 TRIMP per hour (Moderate effort)
+        return row['duration_h'] * 40
+    
+    hr_res = (row['average_heartrate'] - REST_HR) / (MAX_HR - REST_HR)
+    trimp = row['duration_min'] * hr_res * 0.64 * np.exp(1.92 * hr_res)
+    return trimp
 
-### FEATURE ENGINEERING ###
+df['trimp'] = df.apply(calculate_trimp, axis=1)
 
-# Prevent division by zero
-df_clean.replace([np.inf, -np.inf], np.nan, inplace=True)
+# B. Grade Adjusted Speed (GAP) Approximation
+# Very rough estimation: +1% grade ≈ +3% energy cost (Minetti et al. simplified)
+# We only calculate this for Runs
+df['grade_pct'] = (df['total_elevation_gain'] / df['distance']) * 100
+df['gap_speed_kmh'] = df['speed_kmh']
+mask_run = df['sport_type'].isin(['Run', 'TrailRun'])
 
-## 1. RUNNING (Run + TrailRun) ##
-# Strava differentiates Run and TrailRun. We want both.
-is_run = df_clean['sport_type'].isin(['Run', 'TrailRun'])
+# If running uphill, increase speed to represent flat equivalent
+# (Simplified: add 0.3 km/h for every 1% gradient)
+df.loc[mask_run, 'gap_speed_kmh'] = df.loc[mask_run, 'speed_kmh'] + (df.loc[mask_run, 'grade_pct'] * 0.3)
 
-# "Elevation Ratio" (Better name than grade_pct for summary data)
-# This represents "How hilly was the route?" not "How steep was the hill?"
-df_clean.loc[is_run, 'elevation_ratio_m_per_km'] = (
-    df_clean['total_elevation_gain'] / df_clean['distance_km']
-)
+# C. Efficiency Factor (EF)
+# Output (Speed/Power) divided by Input (Heart Rate)
+# Using GAP speed makes this metric comparable between Hilly and Flat runs.
+df['efficiency_factor'] = df['gap_speed_kmh'] / df['average_heartrate']
+df.loc[df['average_heartrate'] == 0, 'efficiency_factor'] = np.nan
 
-# Efficiency Proxy: Speed / HR 
-# Only valid if HR data exists (> 0)
-has_hr = df_clean['average_heartrate'] > 0
-df_clean.loc[is_run & has_hr, 'aerobic_efficiency'] = (
-    df_clean['avg_speed_kmh'] / df_clean['average_heartrate']
-)
+# --- 3. CLASSIFICATION ---
 
-## 2. CYCLING ##
-is_ride = df_clean['sport_type'].isin(['Ride', 'VirtualRide', 'GravelRide'])
+# Normalize Sport Types
+def classify_sport(t):
+    if t in ['Run', 'TrailRun']: return 'Run'
+    if t in ['Ride', 'GravelRide', 'VirtualRide', 'E-BikeRide']: return 'Ride'
+    if t in ['Swim']: return 'Swim'
+    if t in ['WeightTraining', 'Workout', 'Crossfit']: return 'Strength'
+    return 'Other'
 
-# VAM (Global Approximation)
-# Note: This is "Global VAM" (Total Elev / Total Time). 
-# Real VAM requires segment data. This is useful only for comparison between rides.
-df_clean.loc[is_ride, 'global_vam_m_h'] = (
-    df_clean['total_elevation_gain'] / df_clean['duration_h']
-)
+df['sport_category'] = df['sport_type'].apply(classify_sport)
 
-# Climbing Classification
-# A ride is "Climbing focused" if it has > 10m elevation gain per km
-is_climbing_ride = (df_clean['total_elevation_gain'] / df_clean['distance_km']) > 10
-df_clean.loc[is_ride, 'ride_category'] = np.where(is_climbing_ride[is_ride], 'Hilly', 'Flat')
-### CLEANUP & EXPORT ###
+# Intensity Zones (Polarized Training Check)
+# Z1: Recovery (<70%), Z2: Aerobic (<80%), Z3: Tempo/Threshold+ (>80%)
+def get_zone(hr):
+    if pd.isna(hr) or hr == 0: return 'Unknown'
+    pct = hr / MAX_HR
+    if pct < 0.70: return 'Z1_Recovery'
+    if pct < 0.82: return 'Z2_Aerobic'
+    return 'Z3_High'
 
-# Drop rows with 0 distance (manual entries or errors)
-df_clean = df_clean[df_clean['distance'] > 0]
+df['intensity_zone'] = df['average_heartrate'].apply(get_zone)
 
-df_clean.to_csv(OUTPUT_FILE, index=False)
-print(f"✅ Analysis complete. Enriched data saved to {OUTPUT_FILE}")
+# --- 4. CUMULATIVE STATS (The "Ghost Runner" Fix) ---
+# We calculate cumulative sums per year AND per sport so we don't mix them up.
+
+df = df.sort_values('start_date_local')
+
+# Helper for cumulative sum by year/sport
+def calculate_cumulative(df, metric, sport):
+    col_name = f'cumul_{metric}_{sport.lower()}'
+    # Filter for sport
+    mask = df['sport_category'] == sport
+    # Group by year and cumsum
+    df.loc[mask, col_name] = df[mask].groupby('year')[metric].cumsum()
+    # Fill NaN (days where you didn't do this sport) with ffill later or 0? 
+    # Better to leave NaN for plotting points, but for "totals" we need care.
+    return df
+
+df['cumul_dist_run'] = np.nan
+df['cumul_dist_ride'] = np.nan
+df['cumul_trimp'] = np.nan
+
+df = calculate_cumulative(df, 'distance_km', 'Run')
+df = calculate_cumulative(df, 'distance_km', 'Ride')
+# TRIMP is global (all sports combined)
+df['cumul_trimp'] = df.groupby('year')['trimp'].cumsum()
+
+
+# --- 5. EXPORT ---
+df.to_csv(OUTPUT_FILE, index=False)
+print(f"✅ Analysis complete. {len(df)} activities processed.")
+print(f"📊 Global TRIMP calculated. Data saved to {OUTPUT_FILE}")
