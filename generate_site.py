@@ -1,21 +1,27 @@
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 from pathlib import Path
 import datetime
 import numpy as np
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / 'output/analytics_strava.csv'
-OUTPUT_HTML = Path('/var/www/html/strava_dashboard.html') # Adjust this path for your server
+# ⚠️ Update this path to where your web server hosts the file
+OUTPUT_HTML = Path('/var/www/html/strava_dashboard.html') 
+SYNC_ENDPOINT = "sync.php" # The file the button will trigger
 
-# Colors (Dark Mode Palette)
-C_BG = "#121212"
-C_CARD = "#1e1e1e"
-C_TEXT = "#e0e0e0"
-C_ACCENT = "#fc4c02" # Strava Orange
-C_MUTED = "#636e72"
+# PALETTE (Dark Mode Professional)
+C_BG = "#0f1014"      # Deep background
+C_CARD = "#1b1e23"    # Card background
+C_TEXT = "#e2e8f0"
+C_CTL = "#3b82f6"     # Blue (Fitness)
+C_ATL = "#ec4899"     # Pink (Fatigue)
+C_TSB_POS = "#22c55e" # Green (Fresh)
+C_TSB_NEG = "#ef4444" # Red (Tired)
+C_ACCENT = "#f97316"  # Strava Orange
 
 # --- LOAD DATA ---
 if not DATA_FILE.exists():
@@ -23,268 +29,303 @@ if not DATA_FILE.exists():
     exit()
 
 df = pd.read_csv(DATA_FILE)
-
-# Date Prep
+df['date'] = pd.to_datetime(df['date'])
 df['start_date_local'] = pd.to_datetime(df['start_date_local'])
-df['year'] = df['start_date_local'].dt.year
-df['day_of_year'] = df['start_date_local'].dt.dayofyear
-df['week'] = df['start_date_local'].dt.isocalendar().week
 
-# Current Context
-today = datetime.datetime.now()
-current_year = today.year
-previous_year = current_year - 1
+# Sort chronologically for charting
+df_chart = df.sort_values('date').copy()
 
-df_curr = df[df['year'] == current_year].copy()
-df_prev = df[df['year'] == previous_year].copy()
-
-# --- KPI CALCULATIONS ---
-total_trimp = df_curr['trimp'].sum()
-total_hours = df_curr['duration_h'].sum()
-run_km = df_curr[df_curr['sport_category'] == 'Run']['distance_km'].sum()
-ride_km = df_curr[df_curr['sport_category'] == 'Ride']['distance_km'].sum()
-
-# Prediction (Linear projection based on day of year)
-days_elapsed = today.timetuple().tm_yday
-if days_elapsed > 10:
-    proj_trimp = (total_trimp / days_elapsed) * 365
+# Latest Metrics (Snapshot)
+if not df.empty:
+    last_row = df_chart.iloc[-1]
+    current_ctl = last_row.get('ctl', 0)
+    current_atl = last_row.get('atl', 0)
+    current_tsb = last_row.get('tsb', 0)
+    
+    # Calculate Ramp Rate (Change in CTL over last 7 days)
+    # Filter to 7 days ago
+    date_7d_ago = last_row['date'] - datetime.timedelta(days=7)
+    row_7d = df_chart[df_chart['date'] <= date_7d_ago].iloc[-1] if not df_chart[df_chart['date'] <= date_7d_ago].empty else None
+    
+    if row_7d is not None:
+        ramp_rate = current_ctl - row_7d['ctl']
+    else:
+        ramp_rate = 0
 else:
-    proj_trimp = 0
+    current_ctl = current_atl = current_tsb = ramp_rate = 0
 
-# --- CHART 1: THE GHOST ATHLETE (Cumulative Load) ---
-# We compare Cumulative TRIMP, not KM. This normalizes Run vs Bike.
-def get_cumul_trimp(d):
-    if d.empty: return pd.DataFrame()
-    # Sort and Cumsum
-    d = d.sort_values('day_of_year')
-    d['cumul_load'] = d['trimp'].cumsum()
-    return d[['day_of_year', 'cumul_load']]
+# --- CHART 1: THE PMC (Performance Management Chart) ---
+# Left Axis: CTL & ATL. Right Axis: TSB (Bar/Area)
 
-c_curr = get_cumul_trimp(df_curr)
-c_prev = get_cumul_trimp(df_prev)
+fig_pmc = make_subplots(specs=[[{"secondary_y": True}]])
 
-fig_ghost = go.Figure()
+# 1. TSB (Form) - Area/Bar behind
+# We split into positive and negative for coloring
+fig_pmc.add_trace(go.Bar(
+    x=df_chart['date'], y=df_chart['tsb'],
+    name="Form (TSB)",
+    marker=dict(color=df_chart['tsb'].apply(lambda x: C_TSB_POS if x >= 0 else C_TSB_NEG)),
+    opacity=0.3
+), secondary_y=True)
 
-# Previous Year (Ghost)
-if not c_prev.empty:
-    fig_ghost.add_trace(go.Scatter(
-        x=c_prev['day_of_year'], y=c_prev['cumul_load'],
-        mode='lines', name=f'{previous_year} (Ghost)',
-        line=dict(color=C_MUTED, width=2, dash='dot')
-    ))
+# 2. CTL (Fitness) - Solid Line
+fig_pmc.add_trace(go.Scatter(
+    x=df_chart['date'], y=df_chart['ctl'],
+    name="Fitness (CTL)",
+    mode='lines',
+    line=dict(color=C_CTL, width=3),
+    fill='tozeroy', fillcolor='rgba(59, 130, 246, 0.1)'
+), secondary_y=False)
 
-# Current Year
-if not c_curr.empty:
-    fig_ghost.add_trace(go.Scatter(
-        x=c_curr['day_of_year'], y=c_curr['cumul_load'],
-        mode='lines', name=f'{current_year}',
-        line=dict(color=C_ACCENT, width=4)
-    ))
-    # Marker for today
-    last = c_curr.iloc[-1]
-    fig_ghost.add_trace(go.Scatter(
-        x=[last['day_of_year']], y=[last['cumul_load']],
-        mode='markers', marker=dict(color='white', size=8), showlegend=False
-    ))
+# 3. ATL (Fatigue) - Dotted Line
+fig_pmc.add_trace(go.Scatter(
+    x=df_chart['date'], y=df_chart['atl'],
+    name="Fatigue (ATL)",
+    mode='lines',
+    line=dict(color=C_ATL, width=1, dash='dot')
+), secondary_y=False)
 
-fig_ghost.update_layout(
-    title="📈 Year vs Year (Training Load)",
+fig_pmc.update_layout(
+    title="⚡ Performance Management Chart (PMC)",
+    template="plotly_dark",
     paper_bgcolor=C_CARD, plot_bgcolor=C_CARD,
     font=dict(color=C_TEXT),
-    xaxis=dict(showgrid=False, title="Day of Year"),
-    yaxis=dict(gridcolor='#333', title="Cumulative TRIMP"),
-    margin=dict(l=40, r=20, t=40, b=40),
-    height=350,
+    margin=dict(l=20, r=20, t=40, b=20),
+    height=400,
+    legend=dict(orientation="h", y=1.1),
     hovermode="x unified"
 )
+fig_pmc.update_yaxes(title_text="Load (CTL/ATL)", secondary_y=False, showgrid=True, gridcolor='#333')
+fig_pmc.update_yaxes(title_text="Form (TSB)", secondary_y=True, showgrid=False, range=[-50, 50])
 
-# --- CHART 2: WEEKLY CONSISTENCY (Bar) ---
-# Sum TRIMP per week
-weekly_load = df_curr.groupby('week')['trimp'].sum().reset_index()
 
-fig_consist = go.Figure(go.Bar(
-    x=weekly_load['week'], y=weekly_load['trimp'],
-    marker_color=C_ACCENT, opacity=0.8
+# --- CHART 2: WEEKLY VOLUME & INTENSITY ---
+weekly = df.groupby(['year', 'week']).agg({
+    'trimp': 'sum', 
+    'distance_km': 'sum', 
+    'start_date_local': 'min'
+}).reset_index()
+# Filter last 52 weeks
+weekly = weekly.sort_values('start_date_local').tail(52)
+
+fig_vol = go.Figure()
+fig_vol.add_trace(go.Bar(
+    x=weekly['start_date_local'], y=weekly['trimp'],
+    marker_color=C_ACCENT, name="Weekly Load"
 ))
-fig_consist.add_hline(y=weekly_load['trimp'].mean(), line_dash="dot", line_color="white", annotation_text="Avg")
+# Add moving average
+fig_vol.add_trace(go.Scatter(
+    x=weekly['start_date_local'], y=weekly['trimp'].rolling(4).mean(),
+    mode='lines', line=dict(color='white', width=2, dash='solid'), name="4w Avg"
+))
 
-fig_consist.update_layout(
-    title="📅 Weekly Load Consistency",
+fig_vol.update_layout(
+    title="📅 Weekly Load Consistency (Last 52w)",
+    template="plotly_dark",
     paper_bgcolor=C_CARD, plot_bgcolor=C_CARD,
     font=dict(color=C_TEXT),
-    xaxis=dict(showgrid=False, title="Week #"),
-    yaxis=dict(showgrid=False, title="TRIMP"),
-    height=250, margin=dict(l=20, r=20, t=40, b=20)
-)
-
-# --- CHART 3: INTENSITY DISTRIBUTION (Donut) ---
-# Are you training polarized?
-zone_counts = df_curr['intensity_zone'].value_counts()
-colors_zones = {'Z1_Recovery': '#00b894', 'Z2_Aerobic': '#fdcb6e', 'Z3_High': '#d63031', 'Unknown': '#636e72'}
-pie_colors = [colors_zones.get(x, '#636e72') for x in zone_counts.index]
-
-fig_zones = go.Figure(data=[go.Pie(
-    labels=zone_counts.index, values=zone_counts.values, hole=.6,
-    marker=dict(colors=pie_colors), textinfo='label+percent'
-)])
-fig_zones.update_layout(
-    title="⚡ Intensity Distribution",
-    paper_bgcolor=C_CARD, plot_bgcolor=C_CARD,
-    font=dict(color=C_TEXT),
-    height=250, margin=dict(l=20, r=20, t=40, b=20),
+    margin=dict(l=20, r=20, t=40, b=20),
+    height=250,
     showlegend=False
 )
 
-# --- CHART 4: RUNNING EFFICIENCY TREND ---
-# Efficiency Factor = GAP Speed / HR. (Rising = Good)
-df_eff = df_curr[
-    (df_curr['sport_category'] == 'Run') & 
-    (df_curr['distance_km'] > 5) & 
-    (df_curr['average_heartrate'] > 120)
+# --- CHART 3: EFFICIENCY FACTOR (Scatter) ---
+# Running Efficiency only
+df_eff = df[
+    (df['sport_category'] == 'Run') & 
+    (df['efficiency_factor'] > 0) & 
+    (df['distance_km'] > 4)
 ].copy()
 
 if not df_eff.empty:
     fig_eff = px.scatter(
-        df_eff, x='start_date_local', y='efficiency_factor',
+        df_eff, x='date', y='efficiency_factor',
         color='average_heartrate', size='distance_km',
-        color_continuous_scale='RdYlGn_r', # Red=HighHR, Green=LowHR
-        title="🏃 Running Efficiency Trend (Rising = Fitter)"
+        color_continuous_scale='RdYlGn_r',
+        title="🏃 Efficiency Factor Trend"
     )
-    fig_eff.update_layout(
-        paper_bgcolor=C_CARD, plot_bgcolor=C_CARD,
-        font=dict(color=C_TEXT),
-        xaxis=dict(showgrid=False, title=""),
-        yaxis=dict(gridcolor='#333', title="Eff. Factor"),
-        height=300, margin=dict(l=20, r=20, t=40, b=20)
-    )
-    # Add Trendline
+    # Trendline
     z = np.polyfit(range(len(df_eff)), df_eff['efficiency_factor'], 1)
     p = np.poly1d(z)
     fig_eff.add_trace(go.Scatter(
-        x=df_eff['start_date_local'], y=p(range(len(df_eff))),
-        mode='lines', name='Trend', line=dict(color='white', width=1, dash='dot')
+        x=df_eff['date'], y=p(range(len(df_eff))),
+        mode='lines', name='Trend', line=dict(color='white', width=2)
     ))
 else:
     fig_eff = go.Figure()
-    fig_eff.update_layout(title="Not enough Running Data", paper_bgcolor=C_CARD, font=dict(color=C_TEXT))
 
-# --- LAST ACTIVITIES TABLE ---
+fig_eff.update_layout(
+    template="plotly_dark", paper_bgcolor=C_CARD, plot_bgcolor=C_CARD,
+    font=dict(color=C_TEXT), height=300, margin=dict(l=20, r=20, t=40, b=20)
+)
+
+# --- TABLE GENERATION ---
 last_5 = df.sort_values('start_date_local', ascending=False).head(5)
 table_rows = ""
 for _, row in last_5.iterrows():
-    date_str = row['start_date_local'].strftime("%d %b")
-    icon = "🏃" if row['sport_category'] == 'Run' else "🚴" if row['sport_category'] == 'Ride' else "🏋️"
-    trimp_val = int(row['trimp'])
+    s_cat = row['sport_category']
+    icon = "🏃" if s_cat == 'Run' else "🚴" if s_cat == 'Ride' else "🏊" if s_cat == 'Swim' else "🏋️"
     
-    # Color code TRIMP
-    trimp_color = "#00b894" if trimp_val < 50 else "#fdcb6e" if trimp_val < 150 else "#d63031"
+    # Format Efficiency
+    eff_display = f"{row['efficiency_factor']:.2f}" if pd.notna(row.get('efficiency_factor')) else "-"
+    
+    # Format Zone
+    zone_color = "#ef4444" if "Z3" in str(row['intensity_zone']) else "#eab308" if "Z2" in str(row['intensity_zone']) else "#22c55e"
     
     table_rows += f"""
-    <tr style="border-bottom: 1px solid #333;">
-        <td style="padding:12px;">{icon} <span style="color:#aaa">{date_str}</span></td>
-        <td style="padding:12px;"><b>{str(row['name'])[:25]}</b></td>
-        <td style="padding:12px;">{row['distance_km']:.1f} km</td>
-        <td style="padding:12px;"><span style="color:{trimp_color}; font-weight:bold;">{trimp_val}</span> <small>Load</small></td>
+    <tr style="border-bottom: 1px solid #333; vertical-align: middle;">
+        <td class="py-3 ps-3">{icon} <span class="text-secondary small">{row['start_date_local'].strftime('%d %b')}</span></td>
+        <td class="fw-bold">{str(row['name'])[:30]}</td>
+        <td>{row['distance_km']:.1f} <small class="text-muted">km</small></td>
+        <td><span class="badge" style="background-color: #333; border: 1px solid {zone_color}">{int(row['trimp'])} TSS</span></td>
+        <td class="text-end pe-3"><small class="text-muted">EF:</small> {eff_display}</td>
     </tr>
     """
 
-# --- HTML GENERATION ---
+# --- HTML TEMPLATE ---
 html = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strava Pro Analytics</title>
+    <title>Athlete Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body {{ background-color: {C_BG}; color: {C_TEXT}; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }}
-        .card {{ background-color: {C_CARD}; border: 1px solid #333; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 20px; }}
-        .metric-val {{ font-size: 2.2rem; font-weight: 800; color: white; margin-bottom: 0; line-height: 1.1; }}
-        .metric-label {{ font-size: 0.85rem; text-transform: uppercase; color: #888; letter-spacing: 1px; font-weight: 600; }}
-        .metric-sub {{ font-size: 0.8rem; color: {C_ACCENT}; }}
-        h4 {{ font-weight: 700; letter-spacing: -0.5px; color: white; }}
-        .table {{ color: #ccc; }}
+        :root {{ --bg-color: {C_BG}; --card-color: {C_CARD}; --accent: {C_ACCENT}; }}
+        body {{ background-color: var(--bg-color); color: {C_TEXT}; font-family: 'Inter', system-ui, sans-serif; }}
+        .card {{ background-color: var(--card-color); border: 1px solid #333; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }}
+        .metric-title {{ font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; font-weight: 600; }}
+        .metric-value {{ font-size: 2.5rem; font-weight: 800; line-height: 1; margin: 10px 0; }}
+        .metric-sub {{ font-size: 0.85rem; }}
+        .btn-sync {{ background-color: var(--accent); border: none; font-weight: 700; color: white; transition: all 0.2s; }}
+        .btn-sync:hover {{ background-color: #ea580c; transform: translateY(-1px); }}
+        .btn-sync:disabled {{ background-color: #555; cursor: not-allowed; }}
+        
+        /* Utility Colors */
+        .text-fitness {{ color: {C_CTL}; }}
+        .text-fatigue {{ color: {C_ATL}; }}
+        .text-fresh {{ color: {C_TSB_POS}; }}
+        .text-tired {{ color: {C_TSB_NEG}; }}
     </style>
 </head>
 <body>
-    <div class="container py-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="container-fluid px-4 py-4" style="max-width: 1400px;">
+        <div class="d-flex justify-content-between align-items-center mb-5">
             <div>
-                <h2 class="mb-0">🔥 Performance Lab</h2>
-                <small class="text-muted">Last sync: {datetime.datetime.now().strftime("%d/%m %H:%M")}</small>
+                <h2 class="fw-bold mb-0">PERFORMANCE LAB</h2>
+                <small class="text-muted">Last Data: {datetime.datetime.now().strftime("%d %b %H:%M")}</small>
             </div>
-            <span class="badge bg-warning text-dark">Beta v2.0</span>
+            <button id="syncBtn" class="btn btn-sync px-4 py-2 rounded-pill" onclick="triggerSync()">
+                🔄 Sync Strava
+            </button>
         </div>
 
-        <div class="row g-3 mb-4">
-            <div class="col-6 col-md-3">
-                <div class="card p-3">
-                    <div class="metric-val">{total_trimp:,.0f}</div>
-                    <div class="metric-label">Total Load (TRIMP)</div>
-                    <div class="metric-sub">Proj: {proj_trimp:,.0f}</div>
+        <div class="row g-4 mb-4">
+            <div class="col-md-3">
+                <div class="card p-4 h-100 position-relative overflow-hidden">
+                    <div class="metric-title">Fitness (CTL)</div>
+                    <div class="metric-value text-fitness">{current_ctl:.0f}</div>
+                    <div class="metric-sub text-muted">42-day Avg Load</div>
+                    <div style="position:absolute; right: -10px; top: -10px; opacity: 0.1;">
+                        <span style="font-size: 8rem;">📈</span>
+                    </div>
                 </div>
             </div>
-            <div class="col-6 col-md-3">
-                <div class="card p-3">
-                    <div class="metric-val">{total_hours:,.0f}h</div>
-                    <div class="metric-label">Moving Time</div>
+            
+            <div class="col-md-3">
+                <div class="card p-4 h-100">
+                    <div class="metric-title">Fatigue (ATL)</div>
+                    <div class="metric-value text-fatigue">{current_atl:.0f}</div>
+                    <div class="metric-sub text-muted">7-day Avg Load</div>
                 </div>
             </div>
-            <div class="col-6 col-md-3">
-                <div class="card p-3">
-                    <div class="metric-val">{run_km:,.0f} <small style="font-size:1rem">km</small></div>
-                    <div class="metric-label">Running</div>
+
+            <div class="col-md-3">
+                <div class="card p-4 h-100">
+                    <div class="metric-title">Form (TSB)</div>
+                    <div class="metric-value {'text-fresh' if current_tsb >= -10 else 'text-tired'}">
+                        {current_tsb:+.0f}
+                    </div>
+                    <div class="metric-sub text-muted">Readiness to Perform</div>
                 </div>
             </div>
-            <div class="col-6 col-md-3">
-                <div class="card p-3">
-                    <div class="metric-val">{ride_km:,.0f} <small style="font-size:1rem">km</small></div>
-                    <div class="metric-label">Cycling</div>
+
+             <div class="col-md-3">
+                <div class="card p-4 h-100">
+                    <div class="metric-title">Ramp Rate</div>
+                    <div class="metric-value {'text-fresh' if ramp_rate < 6 else 'text-tired'}">
+                        {ramp_rate:+.1f}
+                    </div>
+                    <div class="metric-sub text-muted">Weekly CTL Change (Target < 5)</div>
                 </div>
             </div>
         </div>
 
-        <div class="row mb-4">
+        <div class="row g-4 mb-4">
             <div class="col-lg-8">
                 <div class="card p-1">
-                    {fig_ghost.to_html(full_html=False, include_plotlyjs='cdn')}
+                    {fig_pmc.to_html(full_html=False, include_plotlyjs='cdn')}
                 </div>
             </div>
             <div class="col-lg-4">
-                <div class="card p-1">
-                    {fig_consist.to_html(full_html=False, include_plotlyjs=False)}
-                </div>
-                <div class="card p-1 mb-0">
-                    {fig_zones.to_html(full_html=False, include_plotlyjs=False)}
+                <div class="card p-1 h-100">
+                    {fig_vol.to_html(full_html=False, include_plotlyjs=False)}
                 </div>
             </div>
         </div>
 
-        <div class="row">
+        <div class="row g-4">
             <div class="col-lg-6">
                 <div class="card h-100">
-                    <div class="card-header bg-transparent border-bottom border-secondary text-white fw-bold">
-                        📊 Recent Activities
+                    <div class="card-header bg-transparent border-bottom border-secondary text-white fw-bold py-3">
+                        📋 Recent Training
                     </div>
-                    <div class="card-body p-0">
-                        <table class="table table-borderless m-0">
+                    <div class="table-responsive">
+                        <table class="table table-dark table-borderless table-hover m-0">
                             {table_rows}
                         </table>
                     </div>
                 </div>
             </div>
             <div class="col-lg-6">
-                <div class="card h-100 p-1">
-                    {fig_eff.to_html(full_html=False, include_plotlyjs=False)}
+                <div class="card p-1 h-100">
+                     {fig_eff.to_html(full_html=False, include_plotlyjs=False)}
                 </div>
             </div>
         </div>
         
-        <div class="text-center mt-5 text-muted small">
-            Generated automatically by Python on Tinkerboard.
+        <div class="mt-5 text-center text-muted small">
+            Generated by Performance Lab v2.0
         </div>
     </div>
+
+    <script>
+        function triggerSync() {{
+            const btn = document.getElementById('syncBtn');
+            const originalText = btn.innerText;
+            
+            if(!confirm("Launch sync process? This may take a minute.")) return;
+
+            btn.disabled = true;
+            btn.innerText = "⏳ Running...";
+
+            fetch('{SYNC_ENDPOINT}')
+            .then(response => response.text())
+            .then(data => {{
+                console.log(data);
+                alert("✅ Sync command sent! Reload the page in a few seconds.");
+                btn.innerText = "✅ Done";
+                setTimeout(() => {{ window.location.reload(); }}, 2000);
+            }})
+            .catch(error => {{
+                console.error('Error:', error);
+                alert("❌ Sync failed. Check console.");
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }});
+        }}
+    </script>
 </body>
 </html>
 """
@@ -293,11 +334,10 @@ html = f"""
 try:
     with open(OUTPUT_HTML, 'w', encoding='utf-8') as f:
         f.write(html)
-    print(f"✅ Dashboard successfully generated at: {OUTPUT_HTML}")
+    print(f"✅ Dashboard generated: {OUTPUT_HTML}")
 except Exception as e:
-    print(f"❌ Error writing HTML file: {e}")
-    # Fallback to local dir for testing
-    local_path = BASE_DIR / "strava_dashboard.html"
-    with open(local_path, 'w', encoding='utf-8') as f:
+    # Fallback
+    local = BASE_DIR / 'strava_dashboard.html'
+    with open(local, 'w', encoding='utf-8') as f:
         f.write(html)
-    print(f"⚠️ Saved to local directory instead: {local_path}")
+    print(f"⚠️ Permission Error. Saved locally: {local}")
