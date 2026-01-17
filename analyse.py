@@ -70,8 +70,7 @@ df_clean.loc[is_ride, 'global_vam_m_h'] = (
 # Climbing Classification
 # A ride is "Climbing focused" if it has > 10m elevation gain per km
 is_climbing_ride = (df_clean['total_elevation_gain'] / df_clean['distance_km']) > 10
-df_clean.loc[is_ride, 'ride_category'] = np.where(is_climbing_ride, 'Hilly', 'Flat')
-
+df_clean.loc[is_ride, 'ride_category'] = np.where(is_climbing_ride[is_ride], 'Hilly', 'Flat')
 ### CLEANUP & EXPORT ###
 
 # Drop rows with 0 distance (manual entries or errors)
