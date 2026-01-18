@@ -46,7 +46,6 @@ df['duration_min'] = df['moving_time'] / 60
 df['speed_kmh'] = df['average_speed'] * 3.6
 
 # Clean Artifacts
-df = df[df['distance_km'] > 0.1].copy() # Remove GPS glitches
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
 # Sport Classification
