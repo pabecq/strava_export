@@ -10,18 +10,22 @@ import numpy as np
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / 'output/analytics_strava.csv'
 OUTPUT_HTML = Path('/var/www/html/strava_dashboard.html') 
-SYNC_ENDPOINT = Path("/var/www/html/refresh.php")
+SYNC_ENDPOINT = "refresh.php"
 
 # PALETTE PROFESSIONNELLE (Light Mode)
 C_BG = "#f1f5f9"
 C_CARD = "#ffffff"
 C_TEXT = "#0f172a"
 C_SUBTEXT = "#64748b"
-C_CTL = "#2563eb"      # Fitness
-C_ATL = "#e11d48"      # Fatigue
-C_TSB_POS = "#10b981"  # Forme +
-C_TSB_NEG = "#f59e0b"  # Forme -
+C_CTL = "#2563eb"       # Fitness
+C_ATL = "#e11d48"       # Fatigue
+C_TSB_POS = "#10b981"   # Forme +
+C_TSB_NEG = "#f59e0b"   # Forme -
 C_ACCENT = "#fc4c02"
+
+# Specific Sport Colors
+C_RUN = '#ea580c'
+C_RIDE = '#0ea5e9'
 
 # --- CHARGEMENT & NORMALISATION ---
 if not DATA_FILE.exists():
@@ -34,10 +38,16 @@ df = pd.read_csv(DATA_FILE)
 df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
 df['start_date_local'] = pd.to_datetime(df['start_date_local']).dt.tz_localize(None)
 
-# --- FILTRAGE (90 JOURS) ---
+# --- PREPARATION DES DONNEES ---
 now = datetime.datetime.now()
+current_year = now.year
+prev_year = current_year - 1
+
+# 1. Dataset 90 jours (Pour PMC & Stats rapides)
 cutoff_date = now - datetime.timedelta(days=90)
 df_chart = df[df['date'] >= cutoff_date].sort_values('date').copy()
+
+# 2. Dataset Complet (Pour YoY) - On garde tout df
 
 # --- MÉTRIQUES DE PERFORMANCE GLOBALES ---
 if not df.empty:
@@ -64,7 +74,9 @@ else:
 
 last_sync_str = now.strftime('%d/%m à %H:%M')
 
-# --- GRAPHIQUE PRINCIPAL (PMC) ---
+# ==============================================================================
+# 1. GRAPHIQUE PMC (EXISTANT)
+# ==============================================================================
 fig_pmc = make_subplots(specs=[[{"secondary_y": True}]])
 fig_pmc.add_trace(go.Bar(
     x=df_chart['date'], y=df_chart['tsb'], name="Forme (TSB)",
@@ -80,11 +92,84 @@ fig_pmc.add_trace(go.Scatter(
 ), secondary_y=False)
 
 fig_pmc.update_layout(template="simple_white", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-    margin=dict(l=10, r=10, t=30, b=10), height=400, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode="x unified")
+    margin=dict(l=10, r=10, t=30, b=10), height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode="x unified")
 fig_pmc.update_yaxes(showgrid=False, secondary_y=True, range=[-70, 40])
 fig_pmc.update_yaxes(showgrid=True, gridcolor='#e2e8f0', secondary_y=False)
 
-# --- EFFICIENCE ---
+
+# ==============================================================================
+# 2. GRAPHIQUE YOY (NOUVEAU)
+# ==============================================================================
+# Fonction helper pour générer les données cumulées denses (J1 à J365)
+def get_cumulative_data(dataframe, sport_type, target_year):
+    # Filtrer par sport et année
+    df_s = dataframe[(dataframe['sport_category'] == sport_type) & (dataframe['year'] == target_year)].copy()
+    if df_s.empty:
+        return pd.Series(0, index=range(1, 367))
+    
+    # Grouper par jour de l'année et sommer la distance
+    daily = df_s.groupby('day_of_year')['distance_km'].sum()
+    
+    # Reindexer pour avoir tous les jours (1 à 366)
+    daily = daily.reindex(range(1, 367), fill_value=0)
+    
+    # Cumulatif
+    return daily.cumsum()
+
+# Création des subplots côte à côte
+fig_yoy = make_subplots(
+    rows=1, cols=2, 
+    subplot_titles=("🏃 Course à pied (Annuel)", "🚴 Cyclisme (Annuel)"),
+    horizontal_spacing=0.1
+)
+
+sports_map = [
+    {'sport': 'Run', 'col': 1, 'color': C_RUN},
+    {'sport': 'Ride', 'col': 2, 'color': C_RIDE}
+]
+
+for s in sports_map:
+    # Année Précédente (Ligne pointillée, moins visible)
+    y_prev = get_cumulative_data(df, s['sport'], prev_year)
+    fig_yoy.add_trace(go.Scatter(
+        x=y_prev.index, y=y_prev.values,
+        name=f"{prev_year}", mode='lines',
+        line=dict(color=s['color'], width=2, dash='dot'),
+        opacity=0.5,
+        legendgroup=f"group_{s['sport']}",
+        showlegend=False
+    ), row=1, col=s['col'])
+
+    # Année Courante (Ligne pleine, grasse)
+    y_curr = get_cumulative_data(df, s['sport'], current_year)
+    
+    # Couper la ligne courante à aujourd'hui pour ne pas afficher une ligne plate jusqu'en décembre
+    day_of_year_now = now.timetuple().tm_yday
+    y_curr = y_curr[y_curr.index <= day_of_year_now]
+
+    fig_yoy.add_trace(go.Scatter(
+        x=y_curr.index, y=y_curr.values,
+        name=f"{current_year}", mode='lines',
+        line=dict(color=s['color'], width=4),
+        legendgroup=f"group_{s['sport']}",
+        showlegend=False
+    ), row=1, col=s['col'])
+
+fig_yoy.update_layout(
+    template="simple_white", 
+    paper_bgcolor='rgba(0,0,0,0)', 
+    plot_bgcolor='rgba(0,0,0,0)',
+    height=300, 
+    margin=dict(l=10, r=10, t=30, b=10),
+    hovermode="x unified"
+)
+fig_yoy.update_xaxes(showgrid=False, title_text="Jour de l'année")
+fig_yoy.update_yaxes(showgrid=True, gridcolor='#e2e8f0', title_text="km")
+
+
+# ==============================================================================
+# 3. EFFICIENCE & RESTE DU DASHBOARD
+# ==============================================================================
 df_run = df_chart[df_chart['sport_category'] == 'Run'].copy()
 if not df_run.empty:
     fig_eff = px.scatter(df_run, x='start_date_local', y='efficiency_factor', 
@@ -94,11 +179,11 @@ if not df_run.empty:
 else:
     fig_eff = go.Figure()
 
-# --- BLOC STATS PAR SPORT (NOUVEAU) ---
+# --- BLOC STATS PAR SPORT ---
 sport_stats_html = ""
 sports_config = [
-    {'key': 'Run', 'label': 'Course', 'icon': '🏃', 'color': '#ea580c'},
-    {'key': 'Ride', 'label': 'Cyclisme', 'icon': '🚴', 'color': '#0ea5e9'},
+    {'key': 'Run', 'label': 'Course', 'icon': '🏃', 'color': C_RUN},
+    {'key': 'Ride', 'label': 'Cyclisme', 'icon': '🚴', 'color': C_RIDE},
     {'key': 'Swim', 'label': 'Natation', 'icon': '🏊', 'color': '#0284c7'},
     {'key': 'Strength', 'label': 'Musculation', 'icon': '🏋️', 'color': '#475569'},
 ]
@@ -106,34 +191,26 @@ sports_config = [
 html_cards = []
 
 for s in sports_config:
-    # Filtrer les données pour ce sport (90 derniers jours)
     df_s = df_chart[df_chart['sport_category'] == s['key']]
-    
     count = len(df_s)
     dist = df_s['distance_km'].sum()
     dur_h = df_s['duration_h'].sum()
     elev = df_s['total_elevation_gain'].sum()
     
-    # Logique d'affichage spécifique demandée
     if s['key'] == 'Strength':
-        # Pour la muscu : Focus sur le nombre de séances
         main_metric = f"{count}"
         main_unit = "SÉANCES"
         sub_metric = f"{int(dur_h)}h totales"
     elif s['key'] == 'Swim':
-        # Pour la natation : conversion en mètres si < 5km pour lisibilité
         main_metric = f"{dist:.1f}"
         main_unit = "KM"
         sub_metric = f"{int(dur_h)}h • {count} s."
     else:
-        # Run / Ride
         main_metric = f"{int(dist)}"
         main_unit = "KM"
         sub_metric = f"{int(elev)}m D+ • {count} s."
 
-    # Opacité si inactif
     opacity = "1" if count > 0 else "0.4"
-    
     card = f"""
     <div class="col-6 col-md-3" style="opacity: {opacity}">
         <div class="card p-3 h-100 border-start border-4" style="border-left-color: {s['color']} !important;">
@@ -191,7 +268,13 @@ html_content = f"""
                 <h2 class="fw-bold m-0" style="letter-spacing: -1px;">Performance Lab</h2>
                 <p class="text-muted small m-0">90 derniers jours | Mis à jour : {last_sync_str}</p>
             </div>
-            <button id="syncBtn" class="btn btn-strava px-4 py-2" onclick="triggerSync()">SYNCHRONISER</button>
+            <div class="d-flex gap-2">
+                <span class="badge d-flex align-items-center p-2 text-secondary" style="font-weight: 600;">
+                    <span style="color: {C_RUN}; font-size: 1.2em; margin-right:5px;">●</span> {current_year}
+                    <span style="color: {C_RUN}; opacity: 0.5; font-size: 1.2em; margin-left: 10px; margin-right:5px;">●</span> {prev_year}
+                </span>
+                <button id="syncBtn" class="btn btn-strava px-4 py-2" onclick="triggerSync()">SYNCHRONISER</button>
+            </div>
         </div>
 
         <div class="row g-3 mb-4">
@@ -222,19 +305,35 @@ html_content = f"""
         </div>
 
         <div class="row g-3 mb-4">
-            <div class="col-lg-8">
+            <div class="col-12">
                 <div class="card p-3 h-100">
-                    <h6 class="fw-bold mb-3 border-bottom pb-2">Charge d'Entraînement</h6>
+                    <h6 class="fw-bold mb-3 border-bottom pb-2">Charge d'Entraînement (PMC)</h6>
                     {fig_pmc.to_html(full_html=False, include_plotlyjs='cdn')}
                 </div>
             </div>
-            <div class="col-lg-4">
+        </div>
+
+        <div class="row g-3 mb-4">
+            <div class="col-12">
+                <div class="card p-3">
+                    <h6 class="fw-bold mb-3 border-bottom pb-2">Comparatif Annuel ({prev_year} vs {current_year})</h6>
+                    {fig_yoy.to_html(full_html=False, include_plotlyjs=False)}
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-3 mb-4">
+             <div class="col-lg-8">
                  <div class="card p-3 h-100">
                     <h6 class="fw-bold mb-3 border-bottom pb-2">Efficience (Run)</h6>
                     {fig_eff.to_html(full_html=False, include_plotlyjs=False)}
-                    <div class="mt-auto pt-3 text-center">
-                         <h5 class="fw-bold {status_class} mb-0">{status_text}</h5>
-                    </div>
+                 </div>
+            </div>
+            <div class="col-lg-4">
+                 <div class="card p-3 h-100 d-flex flex-column justify-content-center text-center">
+                      <h6 class="text-muted text-uppercase mb-2">Statut Actuel</h6>
+                      <h3 class="fw-bold {status_class} mb-0">{status_text}</h3>
+                      <p class="text-muted small mt-2">Basé sur le TSB ({current_tsb:.1f})</p>
                 </div>
             </div>
         </div>
