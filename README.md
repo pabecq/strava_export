@@ -1,88 +1,150 @@
-🏃‍♂️ Performance Lab - Strava Analytics Dashboard
+# 🏃‍♂️ Performance Lab — Strava Analytics Dashboard
 
-Performance Lab est un pipeline de données complet et un tableau de bord personnel conçu pour extraire, analyser et visualiser vos données d'entraînement depuis l'API Strava.
+> Pipeline de données complet et tableau de bord personnel pour analyser vos données d'entraînement Strava avec des modèles physiologiques avancés.
 
-Il va au-delà des simples statistiques de distance et de temps en intégrant des modèles physiologiques avancés (Modèle de Banister, Seuil Lactique LTHR, TRIMP) pour vous aider à suivre votre condition physique (Fitness), votre fatigue et prédire votre état de forme.
+![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white)
+![Strava](https://img.shields.io/badge/Strava-API%20v3-FC4C02?style=flat-square&logo=strava&logoColor=white)
+![Plotly](https://img.shields.io/badge/Plotly-Interactive-3F4F75?style=flat-square&logo=plotly&logoColor=white)
+![Bootstrap](https://img.shields.io/badge/Bootstrap-5-7952B3?style=flat-square&logo=bootstrap&logoColor=white)
 
-✨ Fonctionnalités
+---
 
-🔄 Synchronisation intelligente : Extraction incrémentale depuis l'API Strava avec gestion automatique des limites de requêtes (rate limits) et des jetons d'accès.
+## 📖 Présentation
 
-🧬 Modélisation Physiologique : * Calcul de la charge d'entraînement (TRIMP).
+**Performance Lab** va au-delà des simples statistiques de distance et de temps. En s'appuyant sur des modèles physiologiques reconnus — **Modèle de Banister**, **Seuil Lactique (LTHR)**, **TRIMP** — il vous offre une vision complète et scientifique de votre progression :
 
-Gestion continue du modèle de Banister : CTL (Fitness), ATL (Fatigue) et TSB (Forme).
+- Suivre votre **condition physique** (CTL/Fitness) et votre **fatigue** (ATL)
+- Prédire votre **état de forme** (TSB) avant une compétition
+- Classifier vos efforts par **zones d'intensité** basées sur votre seuil lactique
 
-Pondération automatique de la charge pour les séances sans capteur cardiaque en fonction de votre vitesse au seuil.
+---
 
-🎯 Zones d'intensité LTHR : Classification des efforts basée sur votre Seuil Lactique (Friel / Coggan) plutôt que sur la FC Max.
+## ✨ Fonctionnalités
 
-📊 Dashboard Interactif : Génération d'un fichier HTML statique intégrant des graphiques interactifs (Plotly), un suivi d'efficience (EF), un récapitulatif multi-sports (Course, Vélo, Natation, Musculation) et le détail de vos dernières activités.
+| Fonctionnalité | Description |
+|---|---|
+| 🔄 **Sync intelligente** | Extraction incrémentale depuis l'API Strava avec gestion automatique des rate limits et renouvellement des tokens |
+| 🧬 **Modèle de Banister** | Calcul continu du CTL (Fitness), ATL (Fatigue) et TSB (Forme) |
+| ⚡ **TRIMP** | Calcul de la charge d'entraînement, avec pondération automatique pour les séances sans capteur cardiaque |
+| 🎯 **Zones LTHR** | Classification des efforts selon votre seuil lactique (méthode Friel / Coggan) |
+| 📊 **Dashboard interactif** | Fichier HTML statique avec graphiques Plotly, suivi d'efficience (EF) et récapitulatif multi-sports |
+| 🏊 **Multi-sports** | Supporte Course à pied, Vélo, Natation et Musculation |
 
-📂 Structure du Projet
+---
 
-└── pabecq-strava_export/
-    ├── .env.example       # Modèle pour les clés d'API Strava
-    ├── requirements.txt   # Dépendances Python
-    ├── fetch.py           # Script d'extraction des données Strava
-    ├── analyse.py         # Moteur d'analyse physiologique
-    └── generate_site.py   # Générateur du Dashboard HTML
+## 📂 Structure du projet
 
+```
+pabecq-strava_export/
+├── .env.example          # Modèle pour les variables d'environnement
+├── requirements.txt      # Dépendances Python
+├── fetch.py              # Extraction des activités depuis l'API Strava
+├── analyse.py            # Moteur d'analyse physiologique (CTL, ATL, TSB, TRIMP...)
+└── generate_site.py      # Générateur du tableau de bord HTML
+```
 
-🚀 Installation & Configuration
+---
 
-1. Prérequis
+## 🚀 Installation
 
-Python 3.8+
+### Prérequis
 
-Une application créée sur Strava Developers pour obtenir vos clés d'API.
+- **Python 3.8+**
+- Un compte [Strava](https://www.strava.com/) avec des activités enregistrées
+- Une application créée sur [Strava Developers](https://developers.strava.com/) pour obtenir vos clés d'API
 
-2. Cloner le projet et installer les dépendances
+### 1. Cloner et installer
 
+```bash
 git clone <votre-repo-url>
 cd pabecq-strava_export
 pip install -r requirements.txt
+```
 
+### 2. Configurer l'API Strava
 
-3. Configurer l'API Strava
-Copiez le fichier .env.example vers .env et ajoutez vos identifiants :
-
+```bash
 cp .env.example .env
+```
 
+Éditez `.env` avec vos identifiants Strava :
 
-Éditez .env avec vos valeurs :
-
+```ini
 STRAVA_CLIENT_ID=votre_client_id
 STRAVA_CLIENT_SECRET=votre_client_secret
 STRAVA_REFRESH_TOKEN=votre_refresh_token
+```
 
+> **Où trouver ces valeurs ?** Rendez-vous sur [strava.com/settings/api](https://www.strava.com/settings/api) après avoir créé votre application.
 
-4. Personnaliser votre physiologie
-Ouvrez le fichier analyse.py et modifiez le dictionnaire PHYSIO en haut du fichier avec vos propres données (Fréquence cardiaque max, au repos, au seuil lactique, etc.) pour des calculs précis.
+### 3. Personnaliser votre profil physiologique
 
-⚙️ Utilisation
+Ouvrez `analyse.py` et modifiez le dictionnaire `PHYSIO` en haut du fichier avec vos propres données :
 
-Le pipeline s'exécute en 3 étapes. Exécutez ces commandes dans l'ordre :
+```python
+PHYSIO = {
+    "hr_max": 190,        # Fréquence cardiaque maximale
+    "hr_rest": 45,        # Fréquence cardiaque au repos
+    "hr_lthr": 168,       # Fréquence cardiaque au seuil lactique (LTHR)
+    # ...
+}
+```
 
-# 1. Récupérer les nouvelles activités depuis Strava
+Ces valeurs sont essentielles pour la précision des calculs de zones et de charge d'entraînement.
+
+---
+
+## ⚙️ Utilisation
+
+Le pipeline s'exécute en 3 étapes séquentielles :
+
+```bash
+# Étape 1 — Récupérer les nouvelles activités depuis Strava
 python fetch.py
 
-# 2. Analyser les données et calculer les métriques (CTL, ATL, TSB...)
+# Étape 2 — Calculer les métriques physiologiques (CTL, ATL, TSB, TRIMP...)
 python analyse.py
 
-# 3. Générer le fichier HTML du Dashboard
+# Étape 3 — Générer le tableau de bord HTML
 python generate_site.py
+```
 
+Le dashboard est généré par défaut dans `/var/www/html/strava_dashboard.html`. Ce chemin est configurable directement dans `generate_site.py`.
 
-Le tableau de bord sera généré (par défaut configuré pour /var/www/html/strava_dashboard.html, modifiable dans generate_site.py) et prêt à être consulté dans votre navigateur web.
+---
 
-🛠️ Technologies Utilisées
+## 📊 Modèles physiologiques utilisés
 
-Python (Logique principale)
+### Modèle de Banister (Impulse-Response)
+Le modèle décompose la performance en trois composantes calculées quotidiennement :
+- **CTL** (Chronic Training Load) — Fitness chronique, moyenne longue (~42 jours)
+- **ATL** (Acute Training Load) — Fatigue aiguë, moyenne courte (~7 jours)
+- **TSB** (Training Stress Balance) — Forme du jour : `TSB = CTL - ATL`
 
-Pandas & NumPy (Manipulation et calcul vectoriel de données)
+### TRIMP (Training Impulse)
+Mesure de la charge d'entraînement pondérée par la fréquence cardiaque. Pour les séances sans capteur, la charge est estimée à partir de la vitesse au seuil.
 
-Plotly (Visualisations interactives)
+### Zones d'intensité LTHR (Friel / Coggan)
+Les efforts sont classifiés en zones basées sur votre **seuil lactique** plutôt que sur la FC maximale, pour une répartition plus précise et personnalisée.
 
-Bootstrap 5 (Interface UI / Composants HTML)
+---
 
-API Strava v3 (Source des données)
+## 🛠️ Stack technique
+
+- **Python** — Logique principale du pipeline
+- **Pandas & NumPy** — Manipulation et calcul vectoriel des données
+- **Plotly** — Visualisations interactives embarquées
+- **Bootstrap 5** — Interface et composants du dashboard HTML
+- **API Strava v3** — Source des données d'entraînement
+
+---
+
+## 🤝 Contribution
+
+Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une *issue* pour signaler un bug ou proposer une amélioration, ou à soumettre une *pull request*.
+
+---
+
+## 📄 Licence
+
+Ce projet est distribué sous licence MIT. Voir le fichier `LICENSE` pour plus de détails.
