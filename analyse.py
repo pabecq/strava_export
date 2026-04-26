@@ -5,7 +5,7 @@ from pathlib import Path
 # --- CONFIGURATION & PHYSIOLOGY ---
 # Update these values based on a recent field test or lab result.
 PHYSIO = {
-    'max_hr': 210,          # Real Max HR
+    'max_hr': 209,          # Real Max HR
     'rest_hr': 51,          # Real Resting HR
     'threshold_hr': 172,    # LTHR (Lactate Threshold HR)
     # Estimated TRIMP per hour for activities without Heart Rate data:
@@ -19,6 +19,7 @@ PHYSIO['default_load_strength'] = 80
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / 'output/raw_strava_data.csv'
 OUTPUT_FILE = BASE_DIR / 'output/analytics_strava.csv'
+OUTPUT_DAILY_FILE = BASE_DIR / 'output/daily_metrics.csv' 
 
 if not INPUT_FILE.exists():
     raise FileNotFoundError(f"❌ Input file not found: {INPUT_FILE}")
@@ -136,16 +137,15 @@ df.loc[mask_hr, 'efficiency_factor'] = df.loc[mask_hr, 'gap_speed_kmh'] / df.loc
 
 def get_zone(hr):
     if pd.isna(hr) or hr == 0: return 'Unknown'
-    # Simple 3-Zone Polarized Model
-    z1_limit = 0.75 * PHYSIO['max_hr'] # Aerobic Threshold approx
-    z2_limit = 0.88 * PHYSIO['max_hr'] # Anaerobic Threshold approx
     
-    if hr < z1_limit: return 'Z1_Green'
-    if hr < z2_limit: return 'Z2_Yellow'
-    return 'Z3_Red'
+    # Modèle Friel / Coggan basé sur le LTHR
+    lthr = PHYSIO['threshold_hr']
+    
+    if hr < 0.89 * lthr: return 'Z1_Z2_Aerobie'
+    if hr <= 1.05 * lthr: return 'Z3_Z4_Seuil'
+    return 'Z5_Anaerobie'
 
 df['intensity_zone'] = df['average_heartrate'].apply(get_zone)
-
 
 # --- 6. CUMULATIVE STATS (By Year/Sport) ---
 # Keeping your ghost runner logic, but ensuring it respects the sort order
@@ -177,6 +177,7 @@ final_cols = [
 cols_to_export = [c for c in final_cols if c in df.columns]
 
 df[cols_to_export].to_csv(OUTPUT_FILE, index=False)
+daily_stats.to_csv(OUTPUT_DAILY_FILE, index=False)
 print(f"✅ Analysis Complete.")
 print(f"📊 Latest Fitness (CTL): {df['ctl'].iloc[-1]:.1f}")
 print(f"😴 Latest Fatigue (ATL): {df['atl'].iloc[-1]:.1f}")
