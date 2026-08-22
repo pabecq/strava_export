@@ -1,0 +1,10 @@
+services:
+  scraper:
+    build: .
+    image: strava-lab
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./fetch_scraper.py:/app/fetch_scraper.py 
