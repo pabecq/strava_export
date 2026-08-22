@@ -13,13 +13,24 @@ DATA_FILE = BASE_DIR / 'output/analytics_strava.csv'
 DAILY_FILE = BASE_DIR / 'output/daily_metrics.csv' # <-- AJOUT
 # Configurable pour permettre les tests locaux (Windows) en plus du déploiement Linux réel.
 OUTPUT_HTML = Path(os.getenv('DASHBOARD_OUTPUT_PATH', '/var/www/html/strava_dashboard.html'))
-SYNC_ENDPOINT = "/refresh.php"  # chemin relatif servi par le webserver (pas un chemin disque)
 
 # Base URL du dashboard tel qu'accessible depuis TON navigateur (pas depuis le board),
-# ex: http://192.168.1.42 ou http://dietpi.local. Nécessaire pour construire le lien du
+# ex: http://192.168.1.42 ou https://xxx.ts.net. Nécessaire pour construire le lien du
 # bookmarklet de reconnexion, qui doit pointer vers ce serveur depuis n'importe où.
 DASHBOARD_BASE_URL = os.getenv('DASHBOARD_BASE_URL', '')
 SESSION_SECRET_FILE = BASE_DIR / 'output/.session_secret'
+
+
+def read_session_secret():
+    if SESSION_SECRET_FILE.exists():
+        return SESSION_SECRET_FILE.read_text(encoding='utf-8').strip()
+    return None
+
+
+# refresh.php exige le même secret que save_session.php (surtout si ce serveur est
+# exposé sur internet via port forwarding) : sans token dans l'URL, le bouton échouerait.
+_secret = read_session_secret()
+SYNC_ENDPOINT = f"/refresh.php?token={_secret}" if _secret else "/refresh.php"
 
 
 def build_reconnect_bookmarklet():
@@ -27,10 +38,9 @@ def build_reconnect_bookmarklet():
     (une fois connecté normalement), il envoie cookies + csrf-token à save_session.php
     sur ce serveur. Aucune automatisation du login Strava lui-même : uniquement un humain
     qui clique, donc aucun risque de détection anti-bot."""
-    if not DASHBOARD_BASE_URL or not SESSION_SECRET_FILE.exists():
+    if not DASHBOARD_BASE_URL or not _secret:
         return None
-    secret = SESSION_SECRET_FILE.read_text(encoding='utf-8').strip()
-    save_endpoint = f"{DASHBOARD_BASE_URL.rstrip('/')}/save_session.php?token={secret}"
+    save_endpoint = f"{DASHBOARD_BASE_URL.rstrip('/')}/save_session.php?token={_secret}"
     js = (
         "(function(){"
         "if(!location.hostname.includes('strava.com')){alert('Ouvre cette page depuis strava.com (connecte) puis reclique.');return;}"
