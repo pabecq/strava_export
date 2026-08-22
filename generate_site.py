@@ -394,4 +394,11 @@ html_content = f"""
 
 with open(OUTPUT_HTML, 'w', encoding='utf-8') as f:
     f.write(html_content)
+try:
+    # Deux utilisateurs différents écrivent ce fichier (dietpi via cron, www-data via le
+    # bouton "Synchroniser"). Sans ça, l'umask par défaut (644) empêche l'un des deux de
+    # réécrire le fichier créé par l'autre.
+    os.chmod(OUTPUT_HTML, 0o664)
+except OSError:
+    pass
 print(f"✅ Dashboard généré avec succès : {OUTPUT_HTML}")
