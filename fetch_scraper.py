@@ -327,7 +327,20 @@ def main():
     url = "https://www.strava.com/athlete/training_activities"
     all_activities = []
     page = 1
-    per_page = 50
+    per_page = 20  # l'API interne ignore perPage et plafonne toujours à 20, confirmé en test
+
+    # Sync incrémentale : on connaît déjà les activités précédemment sauvegardées, donc on
+    # peut arrêter de paginer dès qu'on retombe sur une activité déjà connue (les pages sont
+    # triées du plus récent au plus ancien). Sur un cron toutes les 4h ça ramène le run
+    # habituel à 1 page au lieu de re-télécharger tout l'historique à chaque fois.
+    existing_df = None
+    existing_ids = set()
+    if DATA_FILE.exists():
+        try:
+            existing_df = pd.read_csv(DATA_FILE)
+            existing_ids = set(existing_df['id'].astype(str))
+        except Exception as e:
+            logging.warning(f"⚠️ Impossible de lire l'historique existant ({e}). Re-téléchargement complet.")
 
     logging.info("🌍 Début du téléchargement des activités via l'API interne...")
 
@@ -343,23 +356,28 @@ def main():
 
         data = r.json()
         activities = data.get("models", [])
-        
+
         if not activities:
             break
-            
-        all_activities.extend(activities)
+
+        new_on_page = [a for a in activities if str(a.get('id')) not in existing_ids]
+        all_activities.extend(new_on_page)
         total_expected = data.get("total", "???")
-        
-        logging.info(f"   ⬇️ Page {page} récupérée ({len(activities)} act.). Total provisoire : {len(all_activities)}/{total_expected}")
-        
+
+        logging.info(f"   ⬇️ Page {page} récupérée ({len(new_on_page)} nouvelles / {len(activities)}). Total : {len(all_activities)}/{total_expected}")
+
+        if len(new_on_page) < len(activities):
+            logging.info("   Reste de l'historique déjà connu, arrêt de la pagination.")
+            break
+
         page += 1
         time.sleep(1) # Sécurité anti-ban
 
     if not all_activities:
-        logging.warning("⚠️ Aucune activité trouvée.")
+        logging.info("✅ Aucune nouvelle activité, déjà à jour.")
         return
 
-    # 3. Sauvegarde et mise en forme
+    # 3. Sauvegarde et mise en forme (uniquement les nouvelles activités récupérées)
     df = pd.DataFrame(all_activities)
 
     # L'API interne renvoie à la fois une version formatée pour l'affichage
@@ -384,12 +402,17 @@ def main():
     if 'average_heartrate' not in df.columns:
         df['average_heartrate'] = pd.NA
 
+    # Fusion avec l'historique existant (si présent) plutôt qu'un écrasement complet.
+    if existing_df is not None and not existing_df.empty:
+        df = pd.concat([existing_df, df], ignore_index=True)
+        df = df.drop_duplicates(subset=['id'], keep='last')
+
     if 'start_date_local' in df.columns:
         df['start_date_local'] = pd.to_datetime(df['start_date_local'])
         df.sort_values(by='start_date_local', ascending=False, inplace=True)
 
     df.to_csv(DATA_FILE, index=False)
-    logging.info(f"💾 SUCCESS. {len(df)} activités sauvegardées dans {DATA_FILE}")
+    logging.info(f"💾 SUCCESS. {len(all_activities)} nouvelles activités, {len(df)} au total, sauvegardées dans {DATA_FILE}")
 
 if __name__ == "__main__":
     main()
