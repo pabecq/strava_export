@@ -4,7 +4,7 @@
 # clair au lieu de planter (pas de Selenium/navigateur installé sur ce board).
 set -euo pipefail
 
-APP_DIR="$HOME/strava_export"
+APP_DIR="/opt/strava_export"
 cd "$APP_DIR"
 source .venv/bin/activate
 

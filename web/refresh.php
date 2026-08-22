@@ -3,8 +3,7 @@
 // (scrape -> analyse -> génération) et renvoie un statut exploitable par le JS.
 // À placer dans le document root du serveur web (ex: /var/www/html/refresh.php).
 
-// Adapter si le nom d'utilisateur/chemin du dépôt diffère.
-$appDir = '/home/dietpi/strava_export';
+$appDir = '/opt/strava_export';
 
 header('Content-Type: application/json');
 

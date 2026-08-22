@@ -4,8 +4,7 @@
 // Aucune automatisation du login Strava : uniquement un humain qui clique. À placer dans
 // le document root du serveur web (ex: /var/www/html/save_session.php).
 
-// Adapter si le nom d'utilisateur/chemin du dépôt diffère.
-$appDir = '/home/dietpi/strava_export';
+$appDir = '/opt/strava_export';
 $secretFile = "$appDir/output/.session_secret";
 $sessionFile = "$appDir/output/strava_session.json";
 
