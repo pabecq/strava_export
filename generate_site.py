@@ -13,7 +13,37 @@ DATA_FILE = BASE_DIR / 'output/analytics_strava.csv'
 DAILY_FILE = BASE_DIR / 'output/daily_metrics.csv' # <-- AJOUT
 # Configurable pour permettre les tests locaux (Windows) en plus du déploiement Linux réel.
 OUTPUT_HTML = Path(os.getenv('DASHBOARD_OUTPUT_PATH', '/var/www/html/strava_dashboard.html'))
-SYNC_ENDPOINT = Path("/var/www/html/refresh.php")
+SYNC_ENDPOINT = "/refresh.php"  # chemin relatif servi par le webserver (pas un chemin disque)
+
+# Base URL du dashboard tel qu'accessible depuis TON navigateur (pas depuis le board),
+# ex: http://192.168.1.42 ou http://dietpi.local. Nécessaire pour construire le lien du
+# bookmarklet de reconnexion, qui doit pointer vers ce serveur depuis n'importe où.
+DASHBOARD_BASE_URL = os.getenv('DASHBOARD_BASE_URL', '')
+SESSION_SECRET_FILE = BASE_DIR / 'output/.session_secret'
+
+
+def build_reconnect_bookmarklet():
+    """Génère le lien 'bookmarklet' : glissé dans les favoris, cliqué depuis strava.com
+    (une fois connecté normalement), il envoie cookies + csrf-token à save_session.php
+    sur ce serveur. Aucune automatisation du login Strava lui-même : uniquement un humain
+    qui clique, donc aucun risque de détection anti-bot."""
+    if not DASHBOARD_BASE_URL or not SESSION_SECRET_FILE.exists():
+        return None
+    secret = SESSION_SECRET_FILE.read_text(encoding='utf-8').strip()
+    save_endpoint = f"{DASHBOARD_BASE_URL.rstrip('/')}/save_session.php?token={secret}"
+    js = (
+        "(function(){"
+        "if(!location.hostname.includes('strava.com')){alert('Ouvre cette page depuis strava.com (connecte) puis reclique.');return;}"
+        "var m=document.querySelector('meta[name=\\'csrf-token\\']');"
+        "if(!m){alert('Token CSRF introuvable. Es-tu connecte ?');return;}"
+        "var c={};document.cookie.split(';').forEach(function(p){var i=p.indexOf('=');if(i===-1)return;c[p.slice(0,i).trim()]=decodeURIComponent(p.slice(i+1).trim());});"
+        f"fetch('{save_endpoint}',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{cookies:c,csrf_token:m.content}})}})"
+        ".then(function(r){return r.json();})"
+        ".then(function(d){alert(d.success?'Session Strava mise a jour !':'Erreur : '+(d.message||'inconnue'));})"
+        ".catch(function(e){alert('Impossible de contacter le dashboard : '+e);});"
+        "})();"
+    )
+    return "javascript:" + js
 
 # PALETTE PROFESSIONNELLE (Light Mode)
 C_BG = "#f1f5f9"
@@ -220,6 +250,20 @@ for _, row in last_activities.iterrows():
     """
 
 # --- GENERATION HTML ---
+bookmarklet_href = build_reconnect_bookmarklet()
+if bookmarklet_href:
+    reconnect_html = (
+        f'<a href="{bookmarklet_href}" class="small text-muted d-block mt-1" '
+        'onclick="alert(\'Ce lien doit etre glisse dans tes favoris, pas clique ici.\'); return false;" '
+        'title="Glisse ce lien dans ta barre de favoris. Une fois sur strava.com (connecte), clique dessus pour rafraichir la session.">'
+        '🔗 Glisser pour reconnecter Strava</a>'
+    )
+else:
+    reconnect_html = (
+        '<span class="small text-muted d-block mt-1">'
+        'Reconnexion en un clic non configurée (DASHBOARD_BASE_URL / secret manquant)</span>'
+    )
+
 html_content = f"""
 <!DOCTYPE html>
 <html lang="fr">
@@ -245,7 +289,10 @@ html_content = f"""
                 <h2 class="fw-bold m-0" style="letter-spacing: -1px;">Performance Lab</h2>
                 <p class="text-muted small m-0">90 derniers jours | Mis à jour : {last_sync_str}</p>
             </div>
-            <button id="syncBtn" class="btn btn-strava px-4 py-2" onclick="triggerSync()">SYNCHRONISER</button>
+            <div class="text-end">
+                <button id="syncBtn" class="btn btn-strava px-4 py-2" onclick="triggerSync()">SYNCHRONISER</button>
+                {reconnect_html}
+            </div>
         </div>
 
         <div class="row g-3 mb-4">
@@ -323,9 +370,22 @@ html_content = f"""
         function triggerSync() {{
             const btn = document.getElementById('syncBtn');
             btn.disabled = true; btn.innerText = "⏳ ...";
-            fetch('{SYNC_ENDPOINT}').then(() => {{ 
-                alert("Sync OK."); setTimeout(() => location.reload(), 2000); 
-            }}).catch(() => {{ alert("Erreur."); btn.disabled = false; }});
+            fetch('{SYNC_ENDPOINT}')
+                .then(r => r.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert("Sync OK.");
+                        setTimeout(() => location.reload(), 2000);
+                        return;
+                    }}
+                    if (data.session_expired) {{
+                        alert("Session Strava expirée. Utilise le lien 'Reconnecter Strava' ci-dessous.");
+                    }} else {{
+                        alert("Erreur : " + (data.message || "inconnue"));
+                    }}
+                    btn.disabled = false; btn.innerText = "SYNCHRONISER";
+                }})
+                .catch(() => {{ alert("Erreur de connexion au serveur."); btn.disabled = false; btn.innerText = "SYNCHRONISER"; }});
         }}
     </script>
 </body>

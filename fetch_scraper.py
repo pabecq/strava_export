@@ -313,10 +313,11 @@ def main():
         if not HAS_SELENIUM:
             logging.error(
                 "❌ Session en cache absente/expirée et Selenium n'est pas installé ici "
-                "(ex: Tinkerboard headless). Relance 'python fetch_scraper.py --manual-login' "
-                "sur une machine avec un navigateur, puis copie output/strava_session.json ici."
+                "(ex: Tinkerboard headless). Reconnecte-toi via le bookmarklet du dashboard, "
+                "ou lance 'python fetch_scraper.py --manual-login' sur une machine avec un "
+                "navigateur puis copie output/strava_session.json ici."
             )
-            sys.exit(1)
+            sys.exit(2)  # code dédié : "reconnexion nécessaire", distingué des autres erreurs par refresh.php
         if "--manual-login" in sys.argv:
             cookies, csrf_token = manual_login_session()
         else:
