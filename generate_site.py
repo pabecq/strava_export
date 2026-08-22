@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -10,7 +11,8 @@ import numpy as np
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / 'output/analytics_strava.csv'
 DAILY_FILE = BASE_DIR / 'output/daily_metrics.csv' # <-- AJOUT
-OUTPUT_HTML = Path('/var/www/html/strava_dashboard.html') 
+# Configurable pour permettre les tests locaux (Windows) en plus du déploiement Linux réel.
+OUTPUT_HTML = Path(os.getenv('DASHBOARD_OUTPUT_PATH', '/var/www/html/strava_dashboard.html'))
 SYNC_ENDPOINT = Path("/var/www/html/refresh.php")
 
 # PALETTE PROFESSIONNELLE (Light Mode)

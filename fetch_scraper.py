@@ -9,15 +9,23 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
 import sys
+
+# Selenium n'est nécessaire que pour se logger (automatisé ou manuel). Une machine qui
+# ne fait que réutiliser une session en cache (ex: le Tinkerboard en cron) n'a besoin
+# ni de Selenium ni d'un navigateur installé : l'import est donc optionnel.
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import NoSuchElementException
+    HAS_SELENIUM = True
+except ImportError:
+    HAS_SELENIUM = False
 
 try:
     import undetected_chromedriver as uc
@@ -46,12 +54,11 @@ logging.basicConfig(
 )
 
 load_dotenv(ENV_FILE)
+# Seul le login Selenium automatisé a besoin des identifiants. Une machine qui ne fait
+# que rejouer une session en cache (ex: le Tinkerboard) n'a jamais besoin du mot de passe
+# Strava dans son .env : la vérification se fait donc au moment de l'utiliser, pas ici.
 STRAVA_EMAIL = os.getenv("STRAVA_EMAIL")
 STRAVA_PASSWORD = os.getenv("STRAVA_PASSWORD")
-
-if not STRAVA_EMAIL or not STRAVA_PASSWORD:
-    logging.error("❌ Identifiants Strava absents du fichier .env")
-    exit(1)
 
 def get_chrome_major_version():
     """Détecte la version majeure du Chrome installé, pour que undetected-chromedriver
@@ -186,6 +193,10 @@ def try_cached_session():
 
 def get_strava_session():
     """Utilise Selenium pour se connecter et récupérer les cookies + le token CSRF"""
+    if not STRAVA_EMAIL or not STRAVA_PASSWORD:
+        logging.error("❌ Identifiants Strava absents du fichier .env (requis pour le login automatisé).")
+        sys.exit(1)
+
     driver = create_driver()
 
     try:
@@ -269,11 +280,47 @@ def get_strava_session():
     finally:
         driver.quit()
 
+
+def manual_login_session(timeout=300):
+    """Ouvre un vrai navigateur et laisse l'utilisateur se connecter lui-même
+    (email/mot de passe/2FA/captcha éventuel). Une fois connecté, on récupère
+    juste les cookies + le token CSRF, comme après un login automatisé.
+
+    Un humain qui clique n'est pas détectable comme un bot : ça évite complètement
+    le mur anti-bot rencontré par le login 100% automatisé."""
+    driver = create_driver()
+    try:
+        driver.get("https://www.strava.com/login")
+        print(f"\n>>> Connecte-toi à Strava dans la fenêtre qui vient de s'ouvrir.")
+        print(f">>> Tu as {timeout // 60} minutes. Le script continue automatiquement une fois connecté.\n")
+
+        wait = WebDriverWait(driver, timeout)
+        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "global-nav")))
+
+        cookies = {c['name']: c['value'] for c in driver.get_cookies()}
+        csrf_token = driver.execute_script("return document.querySelector('meta[name=\"csrf-token\"]').content;")
+        save_cached_session(cookies, csrf_token)
+        logging.info("✅ Connexion manuelle détectée, session sauvegardée pour les prochains lancements.")
+        return cookies, csrf_token
+    finally:
+        driver.quit()
+
+
 def main():
     # 1. Réutiliser une session en cache si possible, sinon se logger via Selenium
     session = try_cached_session()
     if session is None:
-        cookies, csrf_token = get_strava_session()
+        if not HAS_SELENIUM:
+            logging.error(
+                "❌ Session en cache absente/expirée et Selenium n'est pas installé ici "
+                "(ex: Tinkerboard headless). Relance 'python fetch_scraper.py --manual-login' "
+                "sur une machine avec un navigateur, puis copie output/strava_session.json ici."
+            )
+            sys.exit(1)
+        if "--manual-login" in sys.argv:
+            cookies, csrf_token = manual_login_session()
+        else:
+            cookies, csrf_token = get_strava_session()
         session = build_scraping_session(cookies, csrf_token)
 
     url = "https://www.strava.com/athlete/training_activities"
@@ -313,7 +360,11 @@ def main():
 
     # 3. Sauvegarde et mise en forme
     df = pd.DataFrame(all_activities)
-    
+
+    # L'API interne renvoie à la fois une version formatée pour l'affichage
+    # ("distance": "8.06") et une version brute ("distance_raw": 8067.6). On garde
+    # seulement la version brute, sous le nom simple attendu par analyse.py.
+    df = df.drop(columns=['distance', 'moving_time', 'elapsed_time'], errors='ignore')
     df = df.rename(columns={
         "start_time": "start_date_local",
         "distance_raw": "distance",
@@ -321,6 +372,16 @@ def main():
         "elapsed_time_raw": "elapsed_time",
         "elevation_gain_raw": "total_elevation_gain",
     })
+
+    # L'API interne (contrairement à l'ancienne API v3) ne renvoie ni la fréquence
+    # cardiaque moyenne (analyse detaillee reservee aux comptes Premium) ni la vitesse
+    # moyenne. La vitesse se recalcule exactement (distance / temps en mouvement) ;
+    # la FC est en revanche indisponible sans abonnement, donc on laisse la colonne
+    # vide pour que analyse.py bascule sur son estimation par défaut (fallback déjà prévu).
+    if 'average_speed' not in df.columns and {'distance', 'moving_time'} <= set(df.columns):
+        df['average_speed'] = df['distance'] / df['moving_time'].replace(0, pd.NA)
+    if 'average_heartrate' not in df.columns:
+        df['average_heartrate'] = pd.NA
 
     if 'start_date_local' in df.columns:
         df['start_date_local'] = pd.to_datetime(df['start_date_local'])
